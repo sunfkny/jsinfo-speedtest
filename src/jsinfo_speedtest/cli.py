@@ -70,7 +70,7 @@ async def run_download(
             if progress is not None and task_id is not None:
                 progress.update(task_id, completed=bytes_ref[0])
 
-    async with httpx.AsyncClient(verify=False) as c:
+    async with httpx.AsyncClient(verify=False, trust_env=False) as c:
         start = time.perf_counter()
 
         async def worker(url: str) -> None:
@@ -175,7 +175,7 @@ def speedtest(
     download_size: int = typer.Option(100, min=1),
 ):
     async def _main() -> None:
-        async with httpx.AsyncClient(verify=False) as c:
+        async with httpx.AsyncClient(verify=False, trust_env=False) as c:
             info = await fetch_userinfo(c)
 
         console.print()
