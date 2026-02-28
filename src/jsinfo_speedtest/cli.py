@@ -23,7 +23,7 @@ console = Console()
 
 
 async def fetch_userinfo(c: httpx.AsyncClient) -> dict:
-    r = await c.get("http://speedtest6.jsinfo.net/speedinfo/userinfo/1")
+    r = await c.get("http://speedauto.jsinfo.net/speedinfo/userinfo/1")
     r.raise_for_status()
     text = r.text.strip()
     try:
