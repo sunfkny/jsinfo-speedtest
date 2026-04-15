@@ -4,7 +4,7 @@ import json
 import time
 import urllib.parse
 
-import httpx
+import niquests
 import typer
 from rich.console import Console
 from rich.progress import (
@@ -22,9 +22,10 @@ app = typer.Typer()
 console = Console()
 
 
-async def fetch_userinfo(c: httpx.AsyncClient) -> dict:
+async def fetch_userinfo(c: niquests.AsyncSession) -> dict:
     r = await c.get("http://speedauto.jsinfo.net/speedinfo/userinfo/1")
     r.raise_for_status()
+    assert r.text
     text = r.text.strip()
     try:
         return json.loads(base64.b64decode(text))
@@ -32,9 +33,10 @@ async def fetch_userinfo(c: httpx.AsyncClient) -> dict:
         return json.loads(text)
 
 
-async def detect_ip_protocol(c: httpx.AsyncClient):
+async def detect_ip_protocol(c: niquests.AsyncSession):
     r = await c.get("http://speedauto.jsinfo.net/speedinfo/checkip")
     r.raise_for_status()
+    assert r.text
     data = r.text.strip().lower()
 
     if data == "ipv6":
@@ -70,14 +72,16 @@ async def run_download(
             if progress is not None and task_id is not None:
                 progress.update(task_id, completed=bytes_ref[0])
 
-    async with httpx.AsyncClient(verify=False, trust_env=False) as c:
+    async with niquests.AsyncSession() as c:
+        c.verify = False
+        c.trust_env = False
         start = time.perf_counter()
 
         async def worker(url: str) -> None:
-            async with c.stream("GET", url) as resp:
-                resp.raise_for_status()
-                async for chunk in resp.aiter_bytes(chunk_size=4 * 1024):
-                    on_chunk(len(chunk))
+            r = await c.get(url, stream=True)
+            r.raise_for_status()
+            async for chunk in await r.iter_content():
+                on_chunk(len(chunk))
 
         tasks = [worker(urls[i % len(urls)]) for i in range(concurrency)]
         await asyncio.gather(*tasks)
@@ -88,8 +92,8 @@ async def run_download(
 
 class PutChunkedWriter:
     def __init__(self, url: str) -> None:
-        parsed_url = httpx.URL(url)
-        self.host = parsed_url.host
+        parsed_url = urllib.parse.urlparse(url)
+        self.host = parsed_url.netloc
         self.port = (
             parsed_url.port
             or {
@@ -109,6 +113,8 @@ class PutChunkedWriter:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.write_chunk(b"")
         self.writer.close()
+        if exc_type is not None:
+            return False
 
     async def write_chunk(self, data: bytes):
         data = f"{len(data):X}\r\n".encode() + data + b"\r\n"
@@ -175,7 +181,9 @@ def speedtest(
     download_size: int = typer.Option(100, min=1),
 ):
     async def _main() -> None:
-        async with httpx.AsyncClient(verify=False, trust_env=False) as c:
+        async with niquests.AsyncSession() as c:
+            c.trust_env = False
+            c.verify = False
             info = await fetch_userinfo(c)
 
         console.print()
