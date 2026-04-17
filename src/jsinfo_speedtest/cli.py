@@ -90,39 +90,6 @@ async def run_download(
     return bytes_ref[0] if bytes_ref is not None else 0, cost
 
 
-class PutChunkedWriter:
-    def __init__(self, url: str) -> None:
-        parsed_url = urllib.parse.urlparse(url)
-        self.host = parsed_url.netloc
-        self.port = (
-            parsed_url.port
-            or {
-                "https": 443,
-                "http": 80,
-            }[parsed_url.scheme]
-        )
-
-    async def __aenter__(self):
-        self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
-        self.writer.write(
-            rb"PUT / HTTP/1.1\r\nHost: {host}\r\nTransfer-Encoding: chunked\r\n\r\n"
-        )
-        await self.writer.drain()
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.write_chunk(b"")
-        self.writer.close()
-        if exc_type is not None:
-            return False
-
-    async def write_chunk(self, data: bytes):
-        data = f"{len(data):X}\r\n".encode() + data + b"\r\n"
-        self.writer.write(data)
-        await self.writer.drain()
-        return len(data)
-
-
 async def run_upload(
     urls: list[str],
     concurrency: int,
@@ -131,26 +98,35 @@ async def run_upload(
     task_id: TaskID | None = None,
     bytes_ref: list[int] | None = None,
 ) -> tuple[int, float]:
-    def on_chunk(n: int) -> None:
-        if bytes_ref is not None:
-            bytes_ref[0] += n
-            if progress is not None and task_id is not None:
-                progress.update(task_id, completed=bytes_ref[0])
+    async def data_provider(total_mb: int, chunk_size: int = 16384):
+        total_bytes = total_mb * 1024 * 1024
+        bytes_sent = 0
+        chunk = b"\0" * chunk_size
+        while bytes_sent < total_bytes:
+            yield chunk
+            bytes_sent += chunk_size
+            if bytes_ref is not None:
+                bytes_ref[0] += chunk_size
+                if progress is not None and task_id is not None:
+                    progress.update(task_id, completed=bytes_ref[0])
 
-    start = time.perf_counter()
+    async with niquests.AsyncSession() as c:
+        c.verify = False
+        c.trust_env = False
+        start = time.perf_counter()
 
-    async def worker(url: str) -> None:
-        async with PutChunkedWriter(url) as w:
-            upload_chunk_size = 4 * 1024
-            chunk = b"\0" * upload_chunk_size
-            chunk_num = upload_size_mb * 1024 * 1024 // upload_chunk_size
-            for _ in range(chunk_num):
-                on_chunk(await w.write_chunk(chunk))
+        async def worker(url: str) -> None:
+            r = await c.post(
+                url,
+                data=data_provider(upload_size_mb // concurrency),
+                timeout=60,
+            )
+            r.raise_for_status()
 
-    tasks = [worker(urls[i % len(urls)]) for i in range(concurrency)]
-    await asyncio.gather(*tasks)
+        tasks = [worker(urls[i % len(urls)]) for i in range(concurrency)]
+        await asyncio.gather(*tasks)
 
-    cost = time.perf_counter() - start
+        cost = time.perf_counter() - start
     return bytes_ref[0] if bytes_ref is not None else 0, cost
 
 
